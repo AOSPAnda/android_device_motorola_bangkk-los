@@ -18,7 +18,6 @@
 #define ANDROID_HARDWARE_BIOMETRICS_FINGERPRINT_V2_3_BIOMETRICSFINGERPRINT_H
 
 #include <android/hardware/biometrics/fingerprint/2.3/IBiometricsFingerprint.h>
-#include <hidl/MQDescriptor.h>
 #include <hidl/Status.h>
 #include <vendor/egistec/hardware/fingerprint/4.0/IBiometricsFingerprintRbs.h>
 
@@ -33,7 +32,6 @@ using IBiometricsFingerprint_2_1 =
         ::android::hardware::biometrics::fingerprint::V2_1::IBiometricsFingerprint;
 using ::android::sp;
 using ::android::hardware::hidl_array;
-using ::android::hardware::hidl_memory;
 using ::android::hardware::hidl_string;
 using ::android::hardware::hidl_vec;
 using ::android::hardware::Return;
@@ -63,11 +61,16 @@ struct BiometricsFingerprint : public IBiometricsFingerprint {
     Return<void> onFingerDown(uint32_t x, uint32_t y, float minor, float major) override;
     Return<void> onFingerUp() override;
 
-    Return<void> extraApiWrapper(int cidValue);
-
   private:
-    sp<IBiometricsFingerprint_2_1> biometrics_2_1_service;
-    sp<IBiometricsFingerprintRbs> rbs_4_0_service;
+    enum TouchCmd { PID_TOUCH = 7, CMD_FINGER_DOWN = 101, CMD_FINGER_UP = 102 };
+
+    enum HbmState { HBM_OFF = 0, HBM_ON = 2 };
+
+    Return<void> extraApiWrapper(int cidValue);
+    Return<void> setHbmState(int state);
+
+    sp<IBiometricsFingerprint_2_1> mFingerprintV2_1;
+    sp<IBiometricsFingerprintRbs> mFingerprintRbs;
 };
 
 }  // namespace implementation

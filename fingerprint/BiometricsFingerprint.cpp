@@ -17,44 +17,14 @@
 
 #include "BiometricsFingerprint.h"
 
-#include <android-base/file.h>
 #include <android-base/logging.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <sys/ioctl.h>
-#include <sys/stat.h>
 
 #include <chrono>
-#include <cmath>
-#include <fstream>
 #include <thread>
 
 #include <display/drm/sde_drm.h>
-
-enum HBM_STATE { OFF = 0, ON = 2 };
-
-void setHbmState(int state) {
-    struct panel_param_info param_info;
-    int32_t node = open("/dev/dri/card0", O_RDWR);
-    int32_t ret = 0;
-
-    if (node < 0) {
-        LOG(ERROR) << "Failed to get card0!";
-        return;
-    }
-
-    param_info.param_idx = PARAM_HBM;
-    param_info.value = state;
-
-    ret = ioctl(node, DRM_IOCTL_SET_PANEL_FEATURE, &param_info);
-    if (ret < 0) {
-        LOG(ERROR) << "IOCTL call failed with ret = " << ret;
-    } else {
-        LOG(INFO) << "HBM state set successfully. New state: " << state;
-    }
-
-    close(node);
-}
 
 namespace android {
 namespace hardware {
@@ -64,53 +34,53 @@ namespace V2_3 {
 namespace implementation {
 
 BiometricsFingerprint::BiometricsFingerprint() {
-    biometrics_2_1_service = IBiometricsFingerprint_2_1::getService();
-    rbs_4_0_service = IBiometricsFingerprintRbs::getService();
+    mFingerprintV2_1 = IBiometricsFingerprint_2_1::getService();
+    mFingerprintRbs = IBiometricsFingerprintRbs::getService();
 }
 
 Return<uint64_t> BiometricsFingerprint::setNotify(
         const sp<IBiometricsFingerprintClientCallback>& clientCallback) {
-    return biometrics_2_1_service->setNotify(clientCallback);
+    return mFingerprintV2_1->setNotify(clientCallback);
 }
 
 Return<uint64_t> BiometricsFingerprint::preEnroll() {
-    return biometrics_2_1_service->preEnroll();
+    return mFingerprintV2_1->preEnroll();
 }
 
 Return<RequestStatus> BiometricsFingerprint::enroll(const hidl_array<uint8_t, 69>& hat,
                                                     uint32_t gid, uint32_t timeoutSec) {
-    return biometrics_2_1_service->enroll(hat, gid, timeoutSec);
+    return mFingerprintV2_1->enroll(hat, gid, timeoutSec);
 }
 
 Return<RequestStatus> BiometricsFingerprint::postEnroll() {
-    return biometrics_2_1_service->postEnroll();
+    return mFingerprintV2_1->postEnroll();
 }
 
 Return<uint64_t> BiometricsFingerprint::getAuthenticatorId() {
-    return biometrics_2_1_service->getAuthenticatorId();
+    return mFingerprintV2_1->getAuthenticatorId();
 }
 
 Return<RequestStatus> BiometricsFingerprint::cancel() {
-    setHbmState(OFF);
-    return biometrics_2_1_service->cancel();
+    setHbmState(HbmState::HBM_OFF);
+    return mFingerprintV2_1->cancel();
 }
 
 Return<RequestStatus> BiometricsFingerprint::enumerate() {
-    return biometrics_2_1_service->enumerate();
+    return mFingerprintV2_1->enumerate();
 }
 
 Return<RequestStatus> BiometricsFingerprint::remove(uint32_t gid, uint32_t fid) {
-    return biometrics_2_1_service->remove(gid, fid);
+    return mFingerprintV2_1->remove(gid, fid);
 }
 
 Return<RequestStatus> BiometricsFingerprint::setActiveGroup(uint32_t gid,
                                                             const hidl_string& storePath) {
-    return biometrics_2_1_service->setActiveGroup(gid, storePath);
+    return mFingerprintV2_1->setActiveGroup(gid, storePath);
 }
 
 Return<RequestStatus> BiometricsFingerprint::authenticate(uint64_t operationId, uint32_t gid) {
-    setHbmState(OFF);
-    return biometrics_2_1_service->authenticate(operationId, gid);
+    setHbmState(HbmState::HBM_OFF);
+    return mFingerprintV2_1->authenticate(operationId, gid);
 }
 
 Return<bool> BiometricsFingerprint::isUdfps(uint32_t) {
@@ -118,36 +88,51 @@ Return<bool> BiometricsFingerprint::isUdfps(uint32_t) {
 }
 
 Return<void> BiometricsFingerprint::onFingerDown(uint32_t, uint32_t, float, float) {
-    setHbmState(ON);
-    extraApiWrapper(101);
+    setHbmState(HbmState::HBM_ON);
+    extraApiWrapper(TouchCmd::CMD_FINGER_DOWN);
 
     std::thread([this]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        BiometricsFingerprint::onFingerUp();
+        this->onFingerUp();
     }).detach();
 
     return Void();
 }
 
 Return<void> BiometricsFingerprint::onFingerUp() {
-    setHbmState(OFF);
-    extraApiWrapper(102);
+    setHbmState(HbmState::HBM_OFF);
+    extraApiWrapper(TouchCmd::CMD_FINGER_UP);
     return Void();
 }
 
 Return<void> BiometricsFingerprint::extraApiWrapper(int cidValue) {
-    int cid[1] = {cidValue};
+    const int cmd = cidValue;
 
-    // Create a std::vector<uint8_t> to store the data from 'cid'
-    std::vector<uint8_t> cid_data(reinterpret_cast<uint8_t*>(cid),
-                                  reinterpret_cast<uint8_t*>(cid) + sizeof(cid));
+    hidl_vec<uint8_t> cmdData;
+    cmdData.setToExternal(reinterpret_cast<uint8_t*>(const_cast<int*>(&cmd)), sizeof(cmd));
 
-    // Create the hidl_vec<uint8_t> from the std::vector<uint8_t>
-    ::android::hardware::hidl_vec<uint8_t> hidl_cid = cid_data;
+    mFingerprintRbs->extra_api(TouchCmd::PID_TOUCH, cmdData, [](const hidl_vec<uint8_t>&) {});
 
-    // Call extra_api with the correct input buffer and an empty lambda callback
-    rbs_4_0_service->extra_api(7, hidl_cid, [](const ::android::hardware::hidl_vec<uint8_t>&) {});
+    return Void();
+}
 
+Return<void> BiometricsFingerprint::setHbmState(int state) {
+    panel_param_info param_info = {.param_idx = PARAM_HBM, .value = state};
+
+    int32_t node = open("/dev/dri/card0", O_RDWR);
+    if (node < 0) {
+        LOG(ERROR) << "Failed to open /dev/dri/card0";
+        return Void();
+    }
+
+    int32_t ret = ioctl(node, DRM_IOCTL_SET_PANEL_FEATURE, &param_info);
+    if (ret < 0) {
+        LOG(ERROR) << "IOCTL failed with ret = " << ret;
+    } else {
+        LOG(INFO) << "HBM state set to " << state;
+    }
+
+    close(node);
     return Void();
 }
 
